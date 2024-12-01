@@ -66,7 +66,7 @@ class WordMessageBox(QMessageBox):
     # 关闭窗口
     def closeEvent(self, event):
         print(f"{datetime.datetime.now()} Save and quit.")
-        self.main_window.quit_and_save()
+        self.main_window.running = False
         self.close()
 
 
@@ -167,7 +167,7 @@ class MainWindow(QMainWindow):
             return "[网络连接失败或找不到该单词]"
 
     def load_data(self):
-        # 读取词库
+        # 读取历史记录
         try:
             with open("./database/history.json", "r", encoding="utf-8") as f:
                 self.history = json.load(f)
@@ -192,69 +192,77 @@ class MainWindow(QMainWindow):
                 intervals = json.load(f)["intervals"]
         except FileNotFoundError:
             with open("./database/config.json", "w", encoding="utf-8") as f:
-                json.dump({"intervals": intervals}, f)
+                json.dump({"intervals": intervals}, f, indent=4)
 
         # 加载选择的词库
         src = self.choose_dict.currentText()
         if src == "":
             self.alert("请将词库放在 dicts 目录后后重试！")
-            self.quit_and_save()
+            self.running = False
+            self.save_data()
             return
         elif src == "history":
-            for start_time, word, times in self.history["queue"]:
-                self.queue.put((start_time, word, times))
+            for start_time, word, level in self.history["queue"]:
+                self.queue.put((start_time, word, level))
             self.history["queue"] = []
         elif src == "favorite":
             for word in self.favorite:
                 if word in self.history["data"]:
                     level = self.history["data"][word]["level"]
+                    if level < len(intervals):
+                        self.queue.put((self.history["data"][word]["records"][-1][0] + intervals[level], word, level))
                 else:
                     level = 0
                     self.history["data"][word] = {"level": 0, "correct": 0, "count": 0, "records": []}
-                if level < len(intervals):
                     self.queue.put((time.time() + intervals[level], word, level))
         else:
             words = json.load(open(f"./dicts/{src}.json", "r", encoding="utf-8"))
             for word in words:
                 if word in self.history["data"]:
                     level = self.history["data"][word]["level"]
+                    if level < len(intervals):
+                        self.queue.put((self.history["data"][word]["records"][-1][0] + intervals[level], word, level))
                 else:
                     level = 0
                     self.history["data"][word] = {"level": 0, "correct": 0, "count": 0, "records": []}
-                if level < len(intervals):
                     self.queue.put((time.time() + intervals[level], word, level))
         # 执行背单词
+        cnt = 0
         while not self.queue.empty() and self.running:
-            cur_time = time.time()
-            start_time, word, times = self.queue.queue[0]
-            if cur_time >= start_time:
-                res = self.show_word(word)
-                self.queue.get()
-                new_time = time.time()
-                self.history["data"][word]["count"] += 1
-                if res:
-                    self.history["data"][word]["records"].append((new_time, True))
-                    self.history["data"][word]["level"] += 1
-                    self.history["data"][word]["correct"] += 1
-                    if times + 1 < len(intervals):
-                        self.queue.put((new_time + intervals[times + 1], word, times + 1))
-                else:
-                    self.history["data"][word]["records"].append((new_time, False))
-                    self.history["data"][word]["level"] = 1
-                    self.queue.put((new_time + intervals[1], word, 1))
-            time.sleep(1)
-        if self.running:
-            self.alert("所有单词已背完！")
-            self.quit_and_save()
+            start_time, word, level = self.queue.queue[0]
+            if time.time() >= start_time:
+                correct = self.show_word(word)
+                # 如果没有关闭单词弹窗
+                if self.running:
+                    self.queue.get()
+                    cur_time = time.time()
+                    self.history["data"][word]["count"] += 1
+                    level = level + 1 if correct else 0
+                    self.history["data"][word]["records"].append((cur_time, correct))
+                    self.history["data"][word]["level"] = level
+                    if level < len(intervals):
+                        self.queue.put((cur_time + intervals[level], word, level))
+            # 每分钟保存一次数据
+            if self.running:
+                time.sleep(1)
+                cnt = (cnt + 1) % 60
+                if cnt == 0:
+                    self.save_data()
 
-    def quit_and_save(self):
-        self.running = False
+        if self.running:
+            self.running = False
+            self.save_data()
+            self.alert("所有单词已背完！")
+        else:
+            self.save_data()
+            self.alert("数据已保存！")
+
+    def save_data(self):
         self.history["queue"] = self.queue.queue
         with open("./database/history.json", "w") as f:
-            json.dump(self.history, f, ensure_ascii=False)
+            json.dump(self.history, f, ensure_ascii=False, indent=4)
         with open("./database/favorite.json", "w") as f:
-            json.dump(self.favorite, f, ensure_ascii=False)
-        # self.close()
+            json.dump(self.favorite, f, ensure_ascii=False, indent=4)
 
 
 if __name__ == "__main__":
